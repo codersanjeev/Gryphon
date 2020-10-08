@@ -3807,23 +3807,13 @@ public class RaiseNativeDataStructureWarningsTranspilationPass: TranspilationPas
 		-> Expression
 	{
 		if let type = expression.swiftType, type.hasPrefix("[") {
-			if type.contains(":") {
-				let message = "Native type \(type) can lead to different behavior in Kotlin. Prefer " +
-					"Map or MutableMap instead."
-				Compiler.handleWarning(
-					message: message,
-					ast: expression,
-					sourceFile: ast.sourceFile,
-					sourceFileRange: expression.range)
-			} else {
-				let message = "Native type \(type) can lead to different behavior in Kotlin. Prefer " +
-					"List or MutableList instead."
-				Compiler.handleWarning(
-					message: message,
-					ast: expression,
-					sourceFile: ast.sourceFile,
-					sourceFileRange: expression.range)
-			}
+			let message = "Native type \(type) can lead to different behavior in Kotlin. Prefer " +
+				"MutableList, List, MutableMap or Map instead."
+			Compiler.handleWarning(
+				message: message,
+				ast: expression,
+				sourceFile: ast.sourceFile,
+				sourceFileRange: expression.range)
 		}
 
 		return super.replaceExpression(expression)
