@@ -16,45 +16,19 @@
 // limitations under the License.
 //
 
-// gryphon output: Bootstrap/AcceptanceTest.kt
-
-#if !GRYPHON
 @testable import GryphonLib
 import XCTest
-#endif
-
-// gryphon insert: import kotlin.system.exitProcess
 
 class AcceptanceTest: XCTestCase {
-	// gryphon insert: constructor(): super() { }
-
-	public func getClassName() -> String { // gryphon annotation: override
-		return "AcceptanceTest"
-	}
-
-	override static func setUp() {
-		do {
-			try TestUtilities.updateASTsForTestCases()
-			Utilities.createFolderIfNeeded(at: TestUtilities.kotlinBuildFolder)
-		}
-		catch let error {
-			print(error)
-			fatalError("Failed to update test files.")
-		}
-	}
-
-	/// Tests to be run by the translated Kotlin version.
-	public func runAllTests() { // gryphon annotation: override
-		AcceptanceTest.setUp()
-		testKotlinCompiler()
-		test()
-	}
-
 	/// Tests to be run when using Swift on Linux
-	static var allTests = [ // gryphon ignore
+	static var allTests = [
 		("testKotlinCompiler", testKotlinCompiler),
 		("test", test),
 	]
+
+	override static func setUp() {
+		Utilities.createFolderIfNeeded(at: TestUtilities.kotlinBuildFolder)
+	}
 
 	// MARK: - Tests
 	func testKotlinCompiler() {
@@ -62,92 +36,71 @@ class AcceptanceTest: XCTestCase {
 	}
 
 	func test() {
-		do {
-			let defaultToolchain: String? = nil
-			let swiftVersion =
-				try TranspilationContext.getVersionOfToolchain(defaultToolchain)
+		let tests = TestUtilities.sortedTests
 
-			let tests = TestUtilities.testCases
+		for testName in tests {
+			print("- Testing \(testName)...")
 
-			for testName in tests {
-				print("- Testing \(testName)...")
-				// Translate the swift code to kotlin
-				let testCasePath = TestUtilities.testCasesPath + testName
-				let astDumpFilePath =
-					SupportingFile.pathOfSwiftASTDumpFile(
-						forSwiftFile: testCasePath,
-						swiftVersion: swiftVersion)
-				let defaultsToFinal = testName.hasSuffix("-default-final")
-				let kotlinResults = try Compiler.transpileKotlinCode(
-					fromASTDumpFiles: [astDumpFilePath],
-					withContext: TranspilationContext(
-						toolchainName: nil,
-						indentationString: "\t",
-						defaultsToFinal: defaultsToFinal))
-				let kotlinCode = kotlinResults[0]
-				let kotlinFilePath = "\(TestUtilities.kotlinBuildFolder)/\(testName).kt"
-				try Utilities.createFile(atPath: kotlinFilePath, containing: kotlinCode)
+			// Compile the Kotlin code
+			let testCasePath = TestUtilities.testCasesPath + testName
 
-				// Compile the resulting Kotlin code
-				let commandResult = Shell.runShellCommand(
-					OS.kotlinCompilerPath,
-					arguments: [
-						"-include-runtime", "-d",
-						"\(TestUtilities.kotlinBuildFolder)/kotlin.jar",
-						kotlinFilePath, ])
+			let kotlinFilePath = testCasePath.withExtension(.kt)
 
-				guard commandResult.status == 0 else {
-					XCTFail("Test \(testName) - compilation error:\n" +
-						commandResult.standardOutput +
-						commandResult.standardError)
-					continue
-				}
-
-				// Run the compiled binary
-				let arguments: MutableList = [
-					"java", "-jar",
+			let commandResult = Shell.runShellCommand(
+				OS.kotlinCompilerPath,
+				arguments: [
+					"-include-runtime", "-d",
 					"\(TestUtilities.kotlinBuildFolder)/kotlin.jar",
-					"-test", "-avoid-unicode", ]
-				if defaultsToFinal {
-					arguments.append("--default-final")
-				}
+					kotlinFilePath, ])
 
-				let runCommandResult = Shell.runShellCommand(arguments)
-				guard runCommandResult.status == 0,
-					runCommandResult.standardError == "" else
-				{
-					XCTFail("Test \(testName) - execution error. " +
-						"It's possible a command timed out.")
-					continue
-				}
-
-				// Compare the result of running the binary with its expected output
-
-				// Files that don't output anything are just included here to ensure the compilation
-				// succeeds and have no file that contains the expected output (since there's no
-				// expected output).
-				let outputFilePath = testCasePath.withExtension(.output)
-				if Utilities.fileExists(at: outputFilePath) {
-					let expectedOutput = try! Utilities.readFile(outputFilePath)
-					XCTAssert(
-						runCommandResult.standardOutput == expectedOutput,
-						"Test \(testName): program failed to produce expected result. " +
-							"Printing diff ('<' means generated, '>' means expected):" +
-							TestUtilities.diff(runCommandResult.standardOutput, expectedOutput))
-				}
-				else {
-					XCTAssert(
-						runCommandResult.standardOutput.isEmpty,
-						"Test \(testName): expected no output from program. Received output:" +
-							runCommandResult.standardOutput)
-				}
-
-				print("\t- Done!")
-
+			guard commandResult.status == 0 else {
+				XCTFail("Test \(testName) - compilation error:\n" +
+					commandResult.standardOutput +
+					commandResult.standardError)
+				continue
 			}
-		}
-		catch let error {
-			XCTFail("🚨 Test failed with error:\n\(error)")
+
+			// Run the compiled binary
+			let arguments: MutableList = [
+				"java", "-jar",
+				"\(TestUtilities.kotlinBuildFolder)/kotlin.jar",
+				"-test", "-avoid-unicode", ]
+
+			let defaultsToFinal = testName.contains("-default-final")
+			if defaultsToFinal {
+				arguments.append("--default-final")
+			}
+
+			let runCommandResult = Shell.runShellCommand(arguments)
+			guard runCommandResult.status == 0,
+				  runCommandResult.standardError == "" else
+			{
+				XCTFail("Test \(testName) - execution error. It's possible a command timed out.")
+				continue
+			}
+
+			// Compare the result of running the binary with its expected output
+
+			// Files that don't output anything are just included here to ensure the compilation
+			// succeeds and have no file that contains the expected output (since there's no
+			// expected output).
+			let outputFilePath = testCasePath.withExtension(.output)
+			if Utilities.fileExists(at: outputFilePath) {
+				let expectedOutput = try! Utilities.readFile(outputFilePath)
+				if runCommandResult.standardOutput != expectedOutput {
+					XCTFail("Test \(testName): program failed to produce expected result. " +
+						"Printing diff ('<' means generated, '>' means expected):" +
+						TestUtilities.diff(runCommandResult.standardOutput, expectedOutput))
+				}
+			}
+			else {
+				if !runCommandResult.standardOutput.isEmpty {
+					XCTFail("Test \(testName): expected no output from program. Received output:" +
+						runCommandResult.standardOutput)
+				}
+			}
+
+			print("\t- Done!")
 		}
 	}
 }

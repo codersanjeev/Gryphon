@@ -16,41 +16,12 @@
 // limitations under the License.
 //
 
-// gryphon output: Bootstrap/IntegrationTest.kt
-
-#if !GRYPHON
 @testable import GryphonLib
 import XCTest
-#endif
-
-// gryphon insert: import kotlin.system.exitProcess
 
 class IntegrationTest: XCTestCase {
-	// gryphon insert: constructor(): super() { }
-
-	public func getClassName() -> String { // gryphon annotation: override
-		return "IntegrationTest"
-	}
-
-	override static func setUp() {
-		do {
-			try TestUtilities.updateASTsForTestCases()
-		}
-		catch let error {
-			print(error)
-			fatalError("Failed to update test files.")
-		}
-	}
-
-	/// Tests to be run by the translated Kotlin version.
-	public func runAllTests() { // gryphon annotation: override
-		IntegrationTest.setUp()
-		test()
-		testWarnings()
-	}
-
 	/// Tests to be run when using Swift on Linux
-	static var allTests = [ // gryphon ignore
+	static var allTests = [
 		("test", test),
 		("testWarnings", testWarnings),
 	]
@@ -58,42 +29,37 @@ class IntegrationTest: XCTestCase {
 	// MARK: - Tests
 	func test() {
 		do {
-			let swiftVersion = try TranspilationContext.getVersionOfToolchain(nil)
-
 			Compiler.clearIssues()
 
-			let tests = TestUtilities.testCases
+			let tests = TestUtilities.sortedTests
 			for testName in tests {
-				print("- Testing \(testName)...")
+				// Generate kotlin code using the whole compiler
+				let testCasePath = TestUtilities.testCasesPath + testName
+				let defaultsToFinal = testName.contains("-default-final")
 
-				do {
-					// Generate kotlin code using the whole compiler
-					let testCasePath = TestUtilities.testCasesPath + testName
-					let astDumpFilePath =
-						SupportingFile.pathOfSwiftASTDumpFile(
-							forSwiftFile: testCasePath,
-							swiftVersion: swiftVersion)
-					let defaultsToFinal = testName.hasSuffix("-default-final")
-					let generatedKotlinCode = try Compiler.transpileKotlinCode(
-						fromASTDumpFiles: [astDumpFilePath],
-						withContext: TranspilationContext(
-							toolchainName: nil,
-							indentationString: "\t",
-							defaultsToFinal: defaultsToFinal)).first!
+				print("- Testing \(testName) (Swift Syntax)...")
+				let generatedKotlinCode = try Compiler.transpileKotlinCode(
+					fromInputFiles: [testCasePath.withExtension(.swift)],
+					withContext: TranspilationContext(
+						indentationString: "\t",
+						defaultsToFinal: defaultsToFinal,
+						compilationArguments: TranspilationContext.SwiftCompilationArguments(
+							absoluteFilePathsAndOtherArguments:
+								[testCasePath.withExtension(.swift)]),
+						xcodeProjectPath: nil,
+						target: nil))
+					.first!
 
-					// Load the previously stored kotlin code from file
-					let expectedKotlinCode =
-						try! Utilities.readFile(testCasePath.withExtension(.kt))
+				// Load the previously stored kotlin code from file
+				let expectedKotlinCode =
+					try! Utilities.readFile((testCasePath).withExtension(.kt))
 
-					XCTAssert(
-						generatedKotlinCode == expectedKotlinCode,
-						"Test \(testName): the transpiler failed to produce expected result. " +
-							"Printing diff ('<' means generated, '>' means expected):" +
-							TestUtilities.diff(generatedKotlinCode, expectedKotlinCode))
-				}
-				catch let error {
-					XCTFail("🚨 Test failed with error:\n\(error)")
-				}
+				XCTAssert(
+					generatedKotlinCode == expectedKotlinCode,
+					"Test \(testName) (Swift Syntax): the transpiler failed to produce " +
+						"expected result. Printing diff ('<' means generated, '>' means " +
+						"expected):" +
+						TestUtilities.diff(generatedKotlinCode, expectedKotlinCode))
 			}
 
 			let unexpectedWarnings = Compiler.issues.filter {
@@ -118,22 +84,20 @@ class IntegrationTest: XCTestCase {
 
 	func testWarnings() {
 		do {
-			let swiftVersion = try TranspilationContext.getVersionOfToolchain(nil)
-
 			Compiler.clearIssues()
 
 			// Generate kotlin code using the whole compiler
-			let testCasePath = TestUtilities.testCasesPath + "warnings"
-			let astDumpFilePath =
-				SupportingFile.pathOfSwiftASTDumpFile(
-					forSwiftFile: testCasePath,
-					swiftVersion: swiftVersion)
+			let testCasePath = TestUtilities.testCasesPath + "warnings.swift"
 			_ = try Compiler.transpileKotlinCode(
-				fromASTDumpFiles: [astDumpFilePath],
+				fromInputFiles: [testCasePath],
 				withContext: TranspilationContext(
-					toolchainName: nil,
 					indentationString: "\t",
-					defaultsToFinal: false)).first!
+					defaultsToFinal: false,
+					compilationArguments: TranspilationContext.SwiftCompilationArguments(
+						absoluteFilePathsAndOtherArguments: [testCasePath]),
+					xcodeProjectPath: nil,
+					target: nil))
+				.first!
 
 			XCTAssert(
 				Compiler.numberOfErrors == 0,
@@ -142,9 +106,11 @@ class IntegrationTest: XCTestCase {
 						.joined(separator: "\n"))
 
 			// Make sure the comment for muting warnings is working
+			let numberOfExpectedWarnings = 22
 			XCTAssert(
-				Compiler.numberOfWarnings == 12,
-				"Expected 11 warnings, found \(Compiler.numberOfWarnings):\n" +
+				Compiler.numberOfWarnings == numberOfExpectedWarnings,
+				"Expected \(numberOfExpectedWarnings) warnings, found " +
+					"\(Compiler.numberOfWarnings):\n" +
 					Compiler.issues.filter { !$0.isError }.map { $0.fullMessage }
 						.joined(separator: "\n"))
 
@@ -163,13 +129,14 @@ class IntegrationTest: XCTestCase {
 					"found \(warnings.count) (printed below, if any).\n" +
 					warnings.map { $0.fullMessage }.joined(separator: "\n"))
 
+			// 2 warnings here (instead of 2) may indicate a problem with muting warnings
 			warnings = Compiler.issues.filter { $0.fullMessage.contains("MutableList") }
 			XCTAssertEqual(
-				warnings.count, 1,
+				warnings.count, 2,
 				"Expected 1 warning containing \"MutableList\", " +
 					"found \(warnings.count) (printed below, if any).\n" +
 					warnings.map { $0.fullMessage }.joined(separator: "\n"))
-			
+
 			warnings = Compiler.issues.filter { $0.fullMessage.contains("MutableMap") }
 			XCTAssertEqual(
 				warnings.count, 1,
@@ -186,8 +153,8 @@ class IntegrationTest: XCTestCase {
 
 			warnings = Compiler.issues.filter { $0.fullMessage.contains("If condition") }
 			XCTAssertEqual(
-				warnings.count, 2,
-				"Expected 2 warnings containing \"If condition\", " +
+				warnings.count, 3,
+				"Expected 3 warnings containing \"If condition\", " +
 					"found \(warnings.count) (printed below, if any).\n" +
 					warnings.map { $0.fullMessage }.joined(separator: "\n"))
 
@@ -213,9 +180,34 @@ class IntegrationTest: XCTestCase {
 				"Expected 1 warnings containing \"initializers in structs\", " +
 					"found \(warnings.count) (printed below, if any).\n" +
 					warnings.map { $0.fullMessage }.joined(separator: "\n"))
+
+			warnings =
+				Compiler.issues.filter { $0.fullMessage.contains("Unknown operator") }
+			XCTAssertEqual(
+				warnings.count, 1,
+				"Expected 1 warnings containing \"Unknown operator\", " +
+					"found \(warnings.count) (printed below, if any).\n" +
+					warnings.map { $0.fullMessage }.joined(separator: "\n"))
+
+			warnings =
+				Compiler.issues.filter { $0.fullMessage.contains("standard library") }
+			XCTAssertEqual(
+				warnings.count, 1,
+				"Expected 1 warnings containing \"standard library\", " +
+					"found \(warnings.count) (printed below, if any).\n" +
+					warnings.map { $0.fullMessage }.joined(separator: "\n"))
+
+			warnings =
+				Compiler.issues.filter { $0.fullMessage.contains("Deprecated") }
+			XCTAssertEqual(
+				warnings.count, 6,
+				"Expected 6 warnings containing \"Deprecated\", " +
+					"found \(warnings.count) (printed below, if any).\n" +
+					warnings.map { $0.fullMessage }.joined(separator: "\n"))
 		}
 		catch let error {
 			XCTFail("🚨 Test failed with error:\n\(error)")
 		}
 	}
+
 }

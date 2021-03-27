@@ -16,59 +16,27 @@
 // limitations under the License.
 //
 
-// gryphon output: Bootstrap/ExtensionsTest.kt
-
-#if !GRYPHON
 @testable import GryphonLib
 import XCTest
-#endif
 
 struct TestableRange: Equatable {
 	let lowerBound: Int
 	let upperBound: Int
 
-	// gryphon insert: constructor(range: IntRange): this(range.start, range.endInclusive) { }
-	// gryphon insert:
-	// gryphon insert: constructor(string: String, range: IntRange):
-	// gryphon insert: 	this(range.start, range.endInclusive) { }
-
-	init(_ string: String, _ range: Range<String.Index>) { // gryphon ignore
+	init(_ string: String, _ range: Range<String.Index>) {
 		self.lowerBound = range.lowerBound.utf16Offset(in: string)
 		self.upperBound = range.upperBound.utf16Offset(in: string)
 	}
 
-	init(_ lowerBound: Int, _ upperBound: Int) { // gryphon ignore
+	init(_ lowerBound: Int, _ upperBound: Int) {
 		self.lowerBound = lowerBound
 		self.upperBound = upperBound
 	}
 }
 
 class ExtensionsTest: XCTestCase {
-	// gryphon insert: constructor(): super() { }
-
-	public func getClassName() -> String { // gryphon annotation: override
-		return "ExtensionsTest"
-	}
-
-	/// Tests to be run by the translated Kotlin version.
-	public func runAllTests() { // gryphon annotation: override
-		testStringSplit()
-		testOccurrencesOfSubstring()
-		testSplitUsingUnescapedSpaces()
-		testRemoveTrailingWhitespace()
-		testUpperSnakeCase()
-		testCapitalizedAsCamelCase()
-		testRemovingBackslashEscapes()
-		testIsNumberAndIsUppercase()
-		testSafeIndex()
-		testSecondToLast()
-		testRotated()
-		testGroupBy()
-		testRemovingDuplicates()
-	}
-
 	/// Tests to be run when using Swift on Linux
-	static var allTests = [ // gryphon ignore
+	static var allTests = [
 		("testStringSplit", testStringSplit),
 		("testOccurrencesOfSubstring", testOccurrencesOfSubstring),
 		("testSplitUsingUnescapedSpaces", testSplitUsingUnescapedSpaces),
@@ -82,6 +50,7 @@ class ExtensionsTest: XCTestCase {
 		("testRotated", testRotated),
 		("testGroupBy", testGroupBy),
 		("testRemovingDuplicates", testRemovingDuplicates),
+		("testContainsCollection", testContainsCollection),
 	]
 
 	// MARK: - Tests
@@ -257,7 +226,7 @@ class ExtensionsTest: XCTestCase {
 			]))
 		XCTAssertEqual(
 			"abc".occurrences(of: "->").map { TestableRange("abc", $0) },
-			List<TestableRange>([])) // gryphon value: mutableListOf<TestableRange>()
+			List<TestableRange>([]))
 		XCTAssertEqual(
 			"->(Int, (String) -> Int) ->-> Int ->".occurrences(of: "->").map {
 					TestableRange("->(Int, (String) -> Int) ->-> Int ->", $0)
@@ -396,5 +365,23 @@ class ExtensionsTest: XCTestCase {
 		XCTAssertEqual(array1.removingDuplicates(), [1, 2, 3])
 		XCTAssertEqual(array2.removingDuplicates(), [1, 2, 3])
 		XCTAssertEqual(array3.removingDuplicates(), [])
+	}
+
+	func testContainsCollection() {
+		let array1 = [1, 2, 3]
+		let array2 = [1, 2, 3, 4]
+		let array3 = [1]
+		let array4: [Int] = []
+		let array5 = [3, 2, 1]
+
+		XCTAssert(array2.contains(collection: array1))
+		XCTAssert(array2.contains(collection: array3))
+		XCTAssert(array2.contains(collection: array4))
+		XCTAssert(array2.contains(collection: array3))
+
+		XCTAssertFalse(array3.contains(collection: array1))
+		XCTAssertFalse(array4.contains(collection: array3))
+		XCTAssertFalse(array1.contains(collection: array2))
+		XCTAssertFalse(array2.contains(collection: array5))
 	}
 }

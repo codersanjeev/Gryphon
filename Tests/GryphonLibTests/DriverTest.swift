@@ -16,45 +16,12 @@
 // limitations under the License.
 //
 
-// gryphon output: Bootstrap/DriverTest.kt
-
-#if !GRYPHON
 @testable import GryphonLib
 import XCTest
-#endif
-
-// gryphon insert: import kotlin.system.exitProcess
 
 class DriverTest: XCTestCase {
-	// gryphon insert: constructor(): super() { }
-
-	public func getClassName() -> String { // gryphon annotation: override
-		return "DriverTest"
-	}
-
-	override static func setUp() {
-		do {
-			try TestUtilities.updateASTsForTestCases()
-		}
-		catch let error {
-			print(error)
-			fatalError("Failed to update test files.")
-		}
-	}
-
-	/// Tests to be run by the translated Kotlin version.
-	public func runAllTests() { // gryphon annotation: override
-		DriverTest.setUp()
-		testOutputs()
-		testGenerateGryphonLibraries()
-		testUsageString()
-		testNoMainFile()
-		testContinueOnErrors()
-		testIndentation()
-	}
-
 	/// Tests to be run when using Swift on Linux
-	static var allTests = [ // gryphon ignore
+	static var allTests = [
 		("testOutputs", testOutputs),
 		("testGenerateGryphonLibraries", testGenerateGryphonLibraries),
 		("testUsageString", testUsageString),
@@ -70,30 +37,34 @@ class DriverTest: XCTestCase {
 
 		var compilerOutput = ""
 		var compilerError = ""
-		Compiler.outputFunction = { contents in
-				compilerOutput = compilerOutput + "\(contents)"
+		Compiler.outputFunction = { (contents: Any, terminator: String) -> () in
+				compilerOutput += "\(contents)" + terminator
 			}
-		Compiler.logError = { contents in
-				compilerError = compilerError + "\(contents)"
+		Compiler.logError = { (contents: Any) -> () in
+				compilerError += "\(contents)"
 			}
 
 		do {
-			try Driver.run(withArguments: ["test.swift"])
+			try Driver.run(withArguments: ["\(TestUtilities.relativeTestFilesPath)/test.swift"])
 			XCTAssert(!compilerOutput.isEmpty)
 
 			compilerOutput = ""
-			try Driver.run(withArguments: ["Test cases/outputs.swift"])
+			try Driver.run(withArguments: ["\(TestUtilities.testCasesPath)outputs.swift"])
 			XCTAssert(compilerOutput.isEmpty)
 
 			compilerOutput = ""
-			try Driver.run(withArguments: ["Test cases/outputs.swift", "--write-to-console"])
+			try Driver.run(withArguments:
+							["\(TestUtilities.testCasesPath)outputs.swift",
+							 "--write-to-console", ])
 			XCTAssert(!compilerOutput.isEmpty)
 
 			// Check if --quiet mutes outputs and warnings
 			compilerOutput = ""
 			compilerError = ""
 			try Driver.run(withArguments:
-				["Test cases/warnings.swift", "--write-to-console", "--quiet"])
+							["\(TestUtilities.testCasesPath)warnings.swift",
+							 "--write-to-console",
+							 "--quiet", ])
 			XCTAssert(compilerOutput.isEmpty)
 			XCTAssert(compilerError.isEmpty)
 
@@ -101,7 +72,10 @@ class DriverTest: XCTestCase {
 			compilerOutput = ""
 			compilerError = ""
 			try Driver.run(withArguments:
-				["Test cases/errors.swift", "--write-to-console", "--quiet", "--continue-on-error"])
+							["\(TestUtilities.testCasesPath)errors.swift",
+							 "--write-to-console",
+							 "--quiet",
+							 "--continue-on-error", ])
 			XCTAssert(compilerOutput.isEmpty)
 			XCTAssert(!compilerError.isEmpty)
 		}
@@ -131,7 +105,7 @@ class DriverTest: XCTestCase {
 			// statement that aren't in the library Gryphon uses internally.
 			// This assumes the statement is followed by two newlines.
 			let actualKotlinLibraryContents = try Utilities.readFile(
-				"Bootstrap/GryphonKotlinLibrary.kt")
+				TestUtilities.bootstrapPath + "GryphonKotlinLibrary.kt")
 			let generatedKotlinLibraryContents = try Utilities.readFile(
 				SupportingFile.gryphonKotlinLibrary.relativePath)
 			let processedKotlinLibraryContents = String(generatedKotlinLibraryContents
@@ -173,8 +147,7 @@ class DriverTest: XCTestCase {
 
 			//
 			let driverResult1 = try Driver.run(withArguments:
-				["-skip-AST-dumps",
-				 "-emit-kotlin",
+				["-emit-kotlin",
 				 "--indentation=t",
 				 "--write-to-console",
 				 "--quiet",
@@ -194,8 +167,7 @@ class DriverTest: XCTestCase {
 
 			//
 			let driverResult2 = try Driver.run(withArguments:
-				["-skip-AST-dumps",
-				 "-emit-kotlin",
+				["-emit-kotlin",
 				 "--indentation=t",
 				 "--no-main-file",
 				 "--write-to-console",
@@ -231,22 +203,20 @@ class DriverTest: XCTestCase {
 			Compiler.clearIssues()
 
 			_ = try Driver.run(withArguments:
-				["-skip-AST-dumps",
-				 "-emit-kotlin",
+				["-emit-kotlin",
 				 "--indentation=t",
 				 "--continue-on-error",
 				 "--write-to-console",
 				 "--quiet",
 				 testCasePath, ])
 
-			XCTAssert(Compiler.numberOfErrors == 2)
+			XCTAssert(Compiler.numberOfErrors == 1)
 
 			//
 			Compiler.clearIssues()
 
 			_ = try Driver.run(withArguments:
-				["-skip-AST-dumps",
-				 "-emit-kotlin",
+				["-emit-kotlin",
 				 "--indentation=t",
 				 "--no-main-file",
 				 "--write-to-console",
@@ -268,8 +238,7 @@ class DriverTest: XCTestCase {
 
 			//
 			let driverResult1 = try Driver.run(withArguments:
-				["-skip-AST-dumps",
-				 "-emit-kotlin",
+				["-emit-kotlin",
 				 "--indentation=t",
 				 "--write-to-console",
 				 "--quiet",
@@ -290,8 +259,7 @@ class DriverTest: XCTestCase {
 
 			//
 			let driverResult2 = try Driver.run(withArguments:
-				["-skip-AST-dumps",
-				 "-emit-kotlin",
+				["-emit-kotlin",
 				 "--indentation=4",
 				 "--write-to-console",
 				 "--quiet",

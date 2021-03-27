@@ -16,66 +16,101 @@
 // limitations under the License.
 //
 
-// gryphon output: Sources/GryphonLib/TranspilationContext.swiftAST
-// gryphon output: Sources/GryphonLib/TranspilationContext.gryphonASTRaw
-// gryphon output: Sources/GryphonLib/TranspilationContext.gryphonAST
-// gryphon output: Bootstrap/TranspilationContext.kt
-
-// gryphon insert: import kotlin.system.*
+import Foundation
 
 public class TranspilationContext {
-	let toolchainName: String?
-	let swiftVersion: String
 	let indentationString: String
 	let defaultsToFinal: Bool
+	var compilationArguments: SwiftCompilationArguments
+	let xcodeProjectPath: String?
+	let target: String?
 
-	/// The base contexts are used for information that all transpilation contexts should contain,
-	/// such as the Gryphon templates library (which can be calculated once and are the same every
+	/// All arguments that should be included in this `swiftc` compilation.
+	public struct SwiftCompilationArguments {
+		/// Absolute paths to any files included in the compilation, as well
+		/// as any other `swiftc` arguments. These are stored in a
+		/// single list because it might not be trivial to separate them.
+		let absoluteFilePathsAndOtherArguments: List<String>
+		/// The path to the SDK that should be used. On Linux, this is `nil`.
+		let absolutePathToSDK: String?
+
+		/// If no SDK path is given, tries to get the SDK path for the current OS
+		/// (as opposed to an iOS SDK).
+		init(
+			absoluteFilePathsAndOtherArguments: List<String>,
+			absolutePathToSDK: String? = nil) throws
+		{
+			self.absoluteFilePathsAndOtherArguments = absoluteFilePathsAndOtherArguments
+			self.absolutePathToSDK = try absolutePathToSDK ?? TranspilationContext.getSDKPath()
+		}
+
+		/// Returns all the necessary arguments for a SourceKit request,
+		/// including "-D", "GRYPHON", "-sdk" and the SDK path
+		var argumentsForSourceKit: MutableList<String> {
+			let mutableArguments = absoluteFilePathsAndOtherArguments.toMutableList()
+			if let sdkPath = absolutePathToSDK {
+				mutableArguments.append("-sdk")
+				mutableArguments.append(sdkPath)
+			}
+			if !mutableArguments.contains(collection: ["-D", "GRYPHON"]) {
+				mutableArguments.append("-D")
+				mutableArguments.append("GRYPHON")
+			}
+			return mutableArguments
+		}
+	}
+
+	#if swift(>=5.3)
+		static let swiftSyntaxVersion = "5.3"
+	#else
+		static let swiftSyntaxVersion = "5.2"
+	#endif
+
+	static private var baseContext: TranspilationContext?
+
+	/// The base context is used for information that all transpilation contexts should contain,
+	/// such as the Gryphon templates library (which can be calculated once and is the same every
 	/// time). All transpilation contexts are initialized with the information from the base
-	/// context that corresponds to their Swift version. Base contexts are indexed in this map by
-	/// their Swift versions.
-	static private let baseContexts: MutableMap<String, TranspilationContext> = [:]
-
-	/// Returns the base context for the requested Swift version. If one hasn't been created yet,
-	/// create it then return it.
-	static internal func getBaseContext(
-		forToolchain toolchainName: String?)
-		throws -> TranspilationContext
-	{
-		let swiftVersion = try TranspilationContext.getVersionOfToolchain(toolchainName)
-		if let result = baseContexts[swiftVersion] {
+	/// context.
+	static internal func getBaseContext() throws -> TranspilationContext {
+		if let result = baseContext {
 			return result
 		}
 		else {
-			let newContext = try TranspilationContext(toolchainName: toolchainName)
-			try Utilities.processGryphonTemplatesLibrary(for: newContext)
-			baseContexts[swiftVersion] = newContext
-			return newContext
+			let result = try TranspilationContext()
+			try Compiler.processGryphonTemplatesLibrary(for: result)
+			baseContext = result
+			return result
 		}
 	}
 
 	/// Normal contexts should be initialized using the correct base context, which is done with the
-	/// the public `init(indentationString:)` method. This method is only for initializing the
-	/// base contexts themselves.
-	private init(toolchainName: String?) throws {
-		try TranspilationContext.checkToolchainSupport(toolchainName)
-
-		self.toolchainName = toolchainName
-		self.swiftVersion = try TranspilationContext.getVersionOfToolchain(toolchainName)
+	/// the public `init` method. This method is only for initializing the base contexts themselves.
+	private init() throws {
 		self.indentationString = ""
 		self.defaultsToFinal = false
 		self.templates = []
+		self.compilationArguments = try SwiftCompilationArguments(absoluteFilePathsAndOtherArguments:
+			[SupportingFile.gryphonTemplatesLibrary.absolutePath])
+		self.xcodeProjectPath = nil
+		self.target = nil
 	}
 
-	public init(toolchainName: String?, indentationString: String, defaultsToFinal: Bool) throws {
-		try TranspilationContext.checkToolchainSupport(toolchainName)
-
-		self.toolchainName = toolchainName
-		self.swiftVersion = try TranspilationContext.getVersionOfToolchain(toolchainName)
+	public init(
+		indentationString: String,
+		defaultsToFinal: Bool,
+		compilationArguments: SwiftCompilationArguments,
+		xcodeProjectPath: String?,
+		target: String?)
+		throws
+	{
 		self.indentationString = indentationString
 		self.defaultsToFinal = defaultsToFinal
+		self.compilationArguments = compilationArguments
+		self.xcodeProjectPath = xcodeProjectPath
+		self.target = target
 		self.templates = try TranspilationContext
-			.getBaseContext(forToolchain: toolchainName)
+			.getBaseContext()
 			.templates
 			.toMutableList()
 	}
@@ -96,47 +131,84 @@ public class TranspilationContext {
 
 	// MARK: - Declaration records
 
-	///
 	/// This variable is used to store enum definitions in order to allow the translator
 	/// to translate them as sealed classes (see the `translate(dotSyntaxCallExpression)` method).
-	///
-	private(set) var sealedClasses: MutableList<String> = []
+	/// Uses enum names as keys, and the declarations themselves as values.
+	private var sealedClasses: Atomic<MutableMap<String, EnumDeclaration>> = Atomic([:])
 
-	public func addSealedClass(_ className: String) {
-		sealedClasses.append(className)
-	}
-
-	///
 	/// This variable is used to store enum definitions in order to allow the translator
 	/// to translate them as enum classes (see the `translate(dotSyntaxCallExpression)` method).
-	///
-	private(set) var enumClasses: MutableList<String> = []
+	/// Uses enum names as keys, and the declarations themselves as values.
+	private var enumClasses: Atomic<MutableMap<String, EnumDeclaration>> = Atomic([:])
 
-	public func addEnumClass(_ className: String) {
-		enumClasses.append(className)
+	public func addEnumClass(_ declaration: EnumDeclaration) {
+		enumClasses.mutateAtomically { $0[declaration.enumName] = declaration }
+	}
+
+	public func addSealedClass(_ declaration: EnumDeclaration) {
+		sealedClasses.mutateAtomically { $0[declaration.enumName] = declaration }
+	}
+
+	/// Gets an enum class with the given name, if one was recorded
+	public func getEnumClass(named name: String) -> EnumDeclaration? {
+		return enumClasses.atomic[name]
+	}
+
+	/// Gets a sealed class with the given name, if one was recorded
+	public func getSealedClass(named name: String) -> EnumDeclaration? {
+		return sealedClasses.atomic[name]
+	}
+
+	/// Gets an enum class or a sealed class with the given name, if one was recorded
+	public func getEnum(named name: String) -> EnumDeclaration? {
+		return enumClasses.atomic[name] ?? sealedClasses.atomic[name]
+	}
+
+	/// Checks if an enum class with the given name was recorded
+	public func hasEnumClass(named name: String) -> Bool {
+		return getEnumClass(named: name) != nil
+	}
+
+	/// Checks if a sealed class with the given name was recorded
+	public func hasSealedClass(named name: String) -> Bool {
+		return getSealedClass(named: name) != nil
+	}
+
+	/// Checks if an enum class or a sealed class with the given name was recorded
+	public func hasEnum(named name: String) -> Bool {
+		return getEnum(named: name) != nil
 	}
 
 	///
 	/// This variable is used to store protocol definitions in order to allow the translator
 	/// to translate conformances to them correctly (instead of as class inheritances).
 	///
-	private(set) var protocols: MutableList<String> = []
+	internal var protocols: Atomic<MutableList<String>> = Atomic([])
 
 	public func addProtocol(_ protocolName: String) {
-		protocols.append(protocolName)
+		protocols.mutateAtomically { $0.append(protocolName) }
 	}
 
 	///
 	/// This variable is used to store the inheritances (superclasses and protocols) of each type.
-	/// Keys correspond to the type, values correspond to its inheritances.
+	/// Keys correspond to the full type name (e.g. `A.B.C`), values correspond to its
+	/// inheritances.
 	///
-	private(set) var inheritances: MutableMap<String, List<String>> = [:]
+	private var inheritances: Atomic<MutableMap<String, List<String>>> = Atomic([:])
 
+	/// Stores the inheritances for a given type. The type's name should include its parent
+	/// types, e.g. `A.B.C` instead of just `C`.
 	public func addInheritances(
-		forType typeName: String,
+		forFullType typeName: String,
 		inheritances typeInheritances: List<String>)
 	{
-		inheritances[typeName] = typeInheritances
+		inheritances.mutateAtomically { $0[typeName] = typeInheritances }
+	}
+
+	/// Gets the inheritances for a given type. The type's name should include its parent
+	/// types, e.g. `A.B.C` instead of just `C`.
+	public func getInheritance(forFullType typeName: String) -> List<String>? {
+		return inheritances.atomic[typeName]
 	}
 
 	// MARK: - Function translations
@@ -153,13 +225,13 @@ public class TranspilationContext {
 		let swiftAPIName: String
 		let typeName: String
 		let prefix: String
-		let parameters: List<String>
+		let parameters: List<FunctionParameter>
 	}
 
-	private var functionTranslations: MutableList<FunctionTranslation> = []
+	private var functionTranslations: Atomic<MutableList<FunctionTranslation>> = Atomic([])
 
 	public func addFunctionTranslation(_ newValue: FunctionTranslation) {
-		functionTranslations.append(newValue)
+		functionTranslations.mutateAtomically { $0.append(newValue) }
 	}
 
 	public func getFunctionTranslation(forName name: String, typeName: String)
@@ -167,9 +239,28 @@ public class TranspilationContext {
 	{
 		// Functions with unnamed parameters here are identified only by their prefix. For instance
 		// `f(_:_:)` here is named `f` but has been stored earlier as `f(_:_:)`.
-		for functionTranslation in functionTranslations {
-			if functionTranslation.swiftAPIName.hasPrefix(name),
-				functionTranslation.typeName == typeName
+		let allTranslations = functionTranslations.atomic
+		for functionTranslation in allTranslations {
+			// Avoid confusions with Void and ()
+			let translationType = functionTranslation.typeName
+				.replacingOccurrences(of: "Void", with: "()")
+				.replacingOccurrences(of: "@autoclosure", with: "")
+				.replacingOccurrences(of: "@escaping", with: "")
+				.replacingOccurrences(of: " ", with: "")
+				.replacingOccurrences(of: "throws", with: "")
+			let functionType = typeName
+				.replacingOccurrences(of: "Void", with: "()")
+				.replacingOccurrences(of: "@autoclosure", with: "")
+				.replacingOccurrences(of: "@escaping", with: "")
+				.replacingOccurrences(of: " ", with: "")
+				.replacingOccurrences(of: "throws", with: "")
+
+			let translationPrefix = functionTranslation.swiftAPIName
+				.prefix(while: { $0 != "(" && $0 != "<" })
+			let namePrefix = name.prefix(while: { $0 != "(" && $0 != "<" })
+
+			if translationPrefix == namePrefix,
+				translationType == functionType
 			{
 				return functionTranslation
 			}
@@ -181,10 +272,10 @@ public class TranspilationContext {
 	// MARK: - Pure functions
 
 	/// Stores pure functions so we can reference them later
-	private var pureFunctions: MutableList<FunctionDeclaration> = []
+	private var pureFunctions: Atomic<MutableList<FunctionDeclaration>> = Atomic([])
 
 	public func recordPureFunction(_ newValue: FunctionDeclaration) {
-		pureFunctions.append(newValue)
+		pureFunctions.mutateAtomically { $0.append(newValue) }
 	}
 
 	public func isReferencingPureFunction(
@@ -202,7 +293,8 @@ public class TranspilationContext {
 		}
 
 		if let declarationExpression = finalCallExpression as? DeclarationReferenceExpression {
-			for functionDeclaration in pureFunctions {
+			let allPureFunctions = pureFunctions.atomic
+			for functionDeclaration in allPureFunctions {
 				if declarationExpression.identifier.hasPrefix(functionDeclaration.prefix),
 					declarationExpression.typeName == functionDeclaration.functionType
 				{
@@ -218,91 +310,45 @@ public class TranspilationContext {
 
 	/// Currently supported versions. If 5.1 is supported, 5.1.x will be too.
 	public static let supportedSwiftVersions: List = [
-		"5.1", "5.2", "5.3"
+		"5.1", "5.2", "5.3",
 	]
 
-	/// Cache for the Swift version used by each toolchain (the key is the toolchain, the value is
-	/// the Swift version). Toolchains inserted here should already have been checked. The default
-	/// toolchain is represented as "".
-	static private var toolchainSwiftVersions: MutableMap<String, String> = [:]
+	// MARK: - macOS SDK
+	private static var sdkPath: String?
+	private static let sdkLock = NSLock()
 
-	/// Returns a string like "5.1" corresponding to the Swift version used by the given toolchain.
-	static internal func getVersionOfToolchain(_ toolchain: String?) throws -> String {
-		if let result = toolchainSwiftVersions[toolchain ?? ""] {
-			return result
+	/// On macOS, tries to find the SDK path using `xcrun`, and throws an error if that fails.
+	/// On Linux, returns `nil`.
+	static func getSDKPath() throws -> String? {
+		sdkLock.lock()
+
+		defer {
+			sdkLock.unlock()
 		}
 
-		let arguments: List<String>
-		if let toolchain = toolchain {
-			arguments = ["xcrun", "--toolchain", toolchain, "swift", "--version"]
-		}
-		else if OS.osType == .macOS {
-			arguments = ["xcrun", "swift", "--version"]
+		#if os(macOS)
+
+		if let macOSSDKPath = sdkPath {
+			return macOSSDKPath
 		}
 		else {
-			arguments = ["swift", "--version"]
-		}
-
-		let swiftVersionCommandResult = Shell.runShellCommand(arguments)
-
-		guard swiftVersionCommandResult.status == 0 else {
-			throw GryphonError(errorMessage: "Unable to determine Swift version:\n" +
-				swiftVersionCommandResult.standardOutput +
-				swiftVersionCommandResult.standardError)
-		}
-
-		// The output is expected to be something like
-		// "Apple Swift version 5.1 (swift-5.1-RELEASE)"
-		var swiftVersion = swiftVersionCommandResult.standardOutput
-		let prefixToRemove = swiftVersion.prefix { !$0.isNumber }
-		swiftVersion = String(swiftVersion.dropFirst(prefixToRemove.count))
-		let endIndex = swiftVersion.index(swiftVersion.startIndex, offsetBy: 3)
-		swiftVersion = String(swiftVersion[..<endIndex])
-
-		try checkToolchainAndVersionSupport(toolchain, swiftVersion)
-
-		toolchainSwiftVersions[toolchain ?? ""] = swiftVersion
-
-		return swiftVersion
-	}
-
-	/// Checks if the given toolchain uses a supported version of Swift. If it doesn't, throw an
-	/// error.
-	static internal func checkToolchainSupport(_ toolchain: String?) throws {
-		let swiftVersion = try getVersionOfToolchain(toolchain)
-		try checkToolchainAndVersionSupport(toolchain, swiftVersion)
-	}
-
-	static private func checkToolchainAndVersionSupport(
-		_ toolchain: String?,
-		_ swiftVersion: String)
-		throws
-	{
-		// If we already checked
-		if let checkedVersion = toolchainSwiftVersions[toolchain ?? ""],
-			checkedVersion == swiftVersion
-		{
-			return
-		}
-
-		guard supportedSwiftVersions.contains(where: { swiftVersion.hasPrefix($0) }) else {
-			var errorMessage = ""
-
-			if let toolchain = toolchain {
-				errorMessage += "Swift version \(swiftVersion) (from toolchain \(toolchain)) " +
-					"is not supported.\n"
+			let commandResult = Shell.runShellCommand(
+				["xcrun", "--show-sdk-path", "--sdk", "macosx"])
+			if commandResult.status == 0 {
+				// Drop the \n at the end
+				let result = String(commandResult.standardOutput.prefix(while: { $0 != "\n" }))
+				sdkPath = result
+				return result
 			}
 			else {
-				errorMessage += "Swift version \(swiftVersion) is not supported.\n"
+				throw GryphonError(errorMessage: "Unable to get macOS SDK path")
 			}
-
-			let supportedVersionsString = supportedSwiftVersions.joined(separator: ", ")
-			errorMessage +=
-				"Currently supported Swift versions: \(supportedVersionsString).\n" +
-				"You can use the `--toolchain=<toolchain name>` option to choose a toolchain " +
-				"with a supported Swift version."
-
-			throw GryphonError(errorMessage: errorMessage)
 		}
+
+		#else
+
+		return nil
+
+		#endif
 	}
 }

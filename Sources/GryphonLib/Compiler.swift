@@ -16,21 +16,16 @@
 // limitations under the License.
 //
 
-// gryphon output: Sources/GryphonLib/Compiler.swiftAST
-// gryphon output: Sources/GryphonLib/Compiler.gryphonASTRaw
-// gryphon output: Sources/GryphonLib/Compiler.gryphonAST
-// gryphon output: Bootstrap/Compiler.kt
-
 import Foundation
+import SwiftSyntax
 
 public class Compiler {
-	public static var logError: ((String) -> ()) = { input in
-		fputs(input + "\n", stderr) // gryphon ignore
-		// gryphon insert: System.err.println(input)
-	}
+	// MARK: - Logging and printing
 
-	public static var logIndentation = 0
+	private static var logIndentation: Atomic<Int> = Atomic(0)
+
 	public static var shouldLogProgress = false
+
 	static func log(_ contents: String) {
 		guard shouldLogProgress else {
 			return
@@ -41,7 +36,7 @@ public class Compiler {
 		// negative, this shouldn't crash)
 		var indentation = ""
 		var i = 0
-		while i < logIndentation {
+		while i < logIndentation.atomic {
 			indentation += "\t"
 			i += 1
 		}
@@ -56,28 +51,44 @@ public class Compiler {
 	/// Log the start of a new operation
 	static func logStart(_ contents: String) {
 		log(contents)
-		logIndentation += 1
+		logIndentation.mutateAtomically { $0 += 1 }
 	}
 
 	/// Log the end of an operation
 	static func logEnd(_ contents: String) {
-		logIndentation -= 1
+		logIndentation.mutateAtomically { $0 -= 1 }
 		log(contents)
 	}
 
 	/// Used for printing strings to stdout. Can be changed by tests in order to check the outputs.
-	public static func output(_ contents: Any) {
-		outputFunction(contents)
+	public static func output(_ contents: Any, terminator: String = "\n") {
+		outputFunction(contents, terminator)
 	}
 
-	public static var outputFunction: ((Any) -> ()) =
-		{ contents in
-			print(contents)
+	/// The function used to output logs to the console. Set to a variable for testing. Any
+	/// alternatives to this function should consider using the `printingLock`.
+	public static var outputFunction: ((Any, String) -> ()) =
+		{ contents, terminator in
+			printingLock.lock()
+			print(contents, terminator: terminator)
+			printingLock.unlock()
 		}
 
-	//
+	/// The function used to error logs to stderr. Set to a variable for testing. Any
+	/// alternatives to this function should consider using the `printingLock`.
+	public static var logError: ((String) -> ()) = { input in
+		printingLock.lock()
+		fputs(input + "\n", stderr)
+		printingLock.unlock()
+	}
+
+	// MARK: - Issues
+
 	public static var shouldStopAtFirstError = false
 	public static var shouldAvoidUnicodeCharacters = false
+	/// Checked before raising warnings so that we can mute them on specific places
+	/// e.g. when checking the standard library
+	public static var shouldMuteWarnings = false
 
 	internal static var issues: MutableList<CompilerIssue> = []
 
@@ -110,19 +121,23 @@ public class Compiler {
 		}
 	}
 
+	/// Uses the given syntax to check for `mute` comments before raising the warning.
 	internal static func handleWarning(
 		message: String,
+		syntax: Syntax?,
 		ast: PrintableAsTree? = nil,
 		sourceFile: SourceFile?,
 		sourceFileRange: SourceFileRange?)
 	{
-		// Check if there's a comment muting warnings in this line in the source code
-		if let sourceFileRange = sourceFileRange {
-			if let comment = sourceFile?.getTranslationCommentFromLine(sourceFileRange.lineStart) {
-				if comment.key == .mute {
-					return
-				}
-			}
+		guard !shouldMuteWarnings else {
+			return
+		}
+
+		if let syntax = syntax,
+			let sourceFile = sourceFile,
+			shouldMuteWarnings(forSyntax: syntax, inSourceFile: sourceFile)
+		{
+			return
 		}
 
 		Compiler.issues.append(CompilerIssue(
@@ -161,37 +176,109 @@ public class Compiler {
 		}
 	}
 
-	//
-	public static func generateSwiftAST(fromASTDump astDump: String) throws -> SwiftAST {
-		let ast = try ASTDumpDecoder(encodedString: astDump).decode()
-		return ast
+	/// Checks this syntax for a leading mute comment. If there isn't one, check its parent
+	/// syntaxes. Stop at the first statement or declaration, so we only check (e.g.) a variable
+	/// declaration but not its enveloping class.
+	public static func shouldMuteWarnings(
+		forSyntax syntax: Syntax,
+		inSourceFile sourceFile: SourceFile)
+		-> Bool
+	{
+		var currentSyntax = syntax
+
+		while true {
+			if !SwiftSyntaxDecoder.getLeadingComments(
+					forSyntax: currentSyntax,
+					sourceFile: sourceFile,
+					withKey: .mute)
+				.isEmpty
+			{
+				// If there's a mute comment
+				return true
+			}
+
+			// If we we're checking a statement or declaration
+			if currentSyntax.is(StmtSyntax.self) || currentSyntax.is(DeclSyntax.self) {
+				return false
+			}
+
+			if let parent = currentSyntax.parent {
+				currentSyntax = parent
+			}
+			else {
+				return false
+			}
+		}
 	}
 
-	public static func transpileSwiftAST(fromASTDumpFile inputFile: String) throws -> SwiftAST {
-		let astDump = try Utilities.readFile(inputFile)
-		return try generateSwiftAST(fromASTDump: astDump)
+	// MARK: - Compiling
+
+	static internal let libraryUpdateLock = NSLock()
+
+	static public func processGryphonTemplatesLibrary(
+		for transpilationContext: TranspilationContext)
+	throws
+	{
+		libraryUpdateLock.lock()
+
+		defer {
+			libraryUpdateLock.unlock()
+		}
+
+		Compiler.logStart("🧑‍💻  Processing the templates library...")
+		let wasMutingWarnings = Compiler.shouldMuteWarnings
+		Compiler.shouldMuteWarnings = true
+
+		let astArray = try Compiler.transpileGryphonRawASTs(
+			fromInputFiles: [SupportingFile.gryphonTemplatesLibrary.relativePath],
+			withContext: transpilationContext)
+
+		let ast = astArray[0]
+		_ = RecordTemplatesTranspilationPass(
+			ast: ast,
+			context: transpilationContext).run()
+
+		Compiler.shouldMuteWarnings = wasMutingWarnings
+		Compiler.logEnd("✅  Done processing the templates library.")
+	}
+
+	//
+	public static func generateSwiftSyntaxDecoder(
+		fromSwiftFile inputFilePath: String,
+		withContext context: TranspilationContext)
+		throws -> SwiftSyntaxDecoder
+	{
+		let logInfo = Log.startLog(name: "1 - Swift Syntax")
+		defer { Log.endLog(info: logInfo) }
+		let sourceFile = try SourceFile.readFile(atPath: inputFilePath)
+		return try SwiftSyntaxDecoder(sourceFile: sourceFile, context: context)
 	}
 
 	//
 	public static func generateGryphonRawAST(
-		fromSwiftAST swiftAST: SwiftAST,
+		usingFileDecoder decoder: SwiftSyntaxDecoder,
 		asMainFile: Bool,
 		withContext context: TranspilationContext)
 		throws -> GryphonAST
 	{
-		return try SwiftTranslator(context: context).translateAST(swiftAST, asMainFile: asMainFile)
+		let logInfo = Log.startLog(name: "1.5 - Swift Syntax Decoder")
+		defer { Log.endLog(info: logInfo) }
+		return try decoder.convertToGryphonAST(asMainFile: asMainFile)
 	}
 
 	public static func transpileGryphonRawASTs(
-		fromASTDumpFiles inputFiles: List<String>,
+		fromInputFiles inputFiles: List<String>,
 		withContext context: TranspilationContext)
 		throws -> List<GryphonAST>
 	{
-		let asts = try inputFiles.map { try transpileSwiftAST(fromASTDumpFile: $0) }
 		let translateAsMainFile = (inputFiles.count == 1)
-		return try asts.map {
-			try generateGryphonRawAST(
-				fromSwiftAST: $0,
+
+		return try inputFiles.map {
+			let decoder = try generateSwiftSyntaxDecoder(
+				fromSwiftFile: $0,
+				withContext: context)
+			return try generateGryphonRawAST(
+				usingFileDecoder: decoder,
 				asMainFile: translateAsMainFile,
 				withContext: context)
 		}
@@ -203,6 +290,8 @@ public class Compiler {
 		withContext context: TranspilationContext)
 		throws -> GryphonAST
 	{
+		let logInfo = Log.startLog(name: "2 - First round")
+		defer { Log.endLog(info: logInfo) }
 		return TranspilationPass.runFirstRoundOfPasses(on: ast, withContext: context)
 	}
 
@@ -211,6 +300,8 @@ public class Compiler {
 		withContext context: TranspilationContext)
 		throws -> GryphonAST
 	{
+		let logInfo = Log.startLog(name: "3 - Second round")
+		defer { Log.endLog(info: logInfo) }
 		return TranspilationPass.runSecondRoundOfPasses(on: ast, withContext: context)
 	}
 
@@ -226,12 +317,12 @@ public class Compiler {
 	}
 
 	public static func transpileGryphonASTs(
-		fromASTDumpFiles inputFiles: List<String>,
+		fromInputFiles inputFiles: List<String>,
 		withContext context: TranspilationContext)
 		throws -> List<GryphonAST>
 	{
 		let rawASTs = try transpileGryphonRawASTs(
-			fromASTDumpFiles: inputFiles,
+			fromInputFiles: inputFiles,
 			withContext: context)
 		return try rawASTs.map {
 			try generateGryphonAST(fromGryphonRawAST: $0, withContext: context)
@@ -244,6 +335,8 @@ public class Compiler {
 		withContext context: TranspilationContext)
 		throws -> String
 	{
+		let logInfo = Log.startLog(name: "4 - Kotlin code")
+		defer { Log.endLog(info: logInfo) }
 		let translation = try KotlinTranslator(context: context).translateAST(ast)
 		let translationResult = translation.resolveTranslation()
 
@@ -262,11 +355,13 @@ public class Compiler {
 	}
 
 	public static func transpileKotlinCode(
-		fromASTDumpFiles inputFiles: List<String>,
+		fromInputFiles inputFiles: List<String>,
 		withContext context: TranspilationContext)
 		throws -> List<String>
 	{
-		let asts = try transpileGryphonASTs(fromASTDumpFiles: inputFiles, withContext: context)
+		let asts = try transpileGryphonASTs(
+			fromInputFiles: inputFiles,
+			withContext: context)
 		return try asts.map {
 			try generateKotlinCode(fromGryphonAST: $0, withContext: context)
 		}
@@ -320,15 +415,15 @@ internal class CompilerIssue {
 
 		if let sourceFile = sourceFile {
 			let sourceFilePath = sourceFile.path
-			let absolutePath = Utilities.getAbsoultePath(forFile: sourceFilePath)
+			let absolutePath = Utilities.getAbsolutePath(forFile: sourceFilePath)
 
 			if let sourceFileRange = sourceFileRange {
-				let sourceFileString = sourceFile.getLine(sourceFileRange.lineStart) ??
-					"<<Unable to get line \(sourceFileRange.lineStart) in file \(absolutePath)>>"
+				let sourceFileString = sourceFile.getLine(sourceFileRange.start.line) ??
+					"<<Unable to get line \(sourceFileRange.start.line) in file \(absolutePath)>>"
 
 				var underlineString = ""
-				if sourceFileRange.columnEnd < sourceFileString.count {
-					for i in 1..<sourceFileRange.columnStart {
+				if sourceFileRange.end.column <= sourceFileString.count {
+					for i in 1..<sourceFileRange.start.column {
 						let sourceFileCharacter = sourceFileString[
 							sourceFileString.index(sourceFileString.startIndex, offsetBy: i - 1)]
 						if sourceFileCharacter == "\t" {
@@ -339,15 +434,15 @@ internal class CompilerIssue {
 						}
 					}
 					underlineString += "^"
-					if sourceFileRange.columnStart < sourceFileRange.columnEnd {
-						for _ in (sourceFileRange.columnStart + 1)..<sourceFileRange.columnEnd {
+					if sourceFileRange.start.column < sourceFileRange.end.column {
+						for _ in sourceFileRange.start.column..<sourceFileRange.end.column {
 							underlineString += "~"
 						}
 					}
 				}
 
-				result = "\(absolutePath):\(sourceFileRange.lineStart):" +
-					"\(sourceFileRange.columnStart): \(errorOrWarning): \(message)\n" +
+				result = "\(absolutePath):\(sourceFileRange.start.line):" +
+					"\(sourceFileRange.start.column): \(errorOrWarning): \(message)\n" +
 					"\(sourceFileString)\n" +
 					"\(underlineString)\n"
 			}
@@ -371,8 +466,8 @@ internal class CompilerIssue {
 	/// Comparison function for ordering issues with smaller lines first, and issues with no lines
 	/// last (i.e. issues where the `range` is `nil`).
 	func isBeforeIssueInLines(_ otherIssue: CompilerIssue) -> Bool {
-		if let thisLine = self.range?.lineStart {
-			if let otherLine = otherIssue.range?.lineStart {
+		if let thisLine = self.range?.start.line {
+			if let otherLine = otherIssue.range?.start.line {
 				return thisLine < otherLine
 			}
 			else {
